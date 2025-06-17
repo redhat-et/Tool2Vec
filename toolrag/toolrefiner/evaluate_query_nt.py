@@ -6,19 +6,18 @@ from collections import defaultdict
 import re
 import torch
 import torch.nn as nn
-from toolrag.tool_reranker.evaluations import (
-    top_k_recall,
-)
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import AutoTokenizer, DebertaV2Model
 
+from toolrag.tool_reranker.evaluations import top_k_recall
 from toolrag.tool_reranker.t2v_datasets import T2VDatasetQueryNT, t2v_collator_query_nt
 from toolrag.tool_reranker.utils import set_seed
 
 
 class T2VPretrainedReranker(nn.Module):
     EMB_DIM_SIZE = {
+        "bert-base-uncased": 768,
         "microsoft/deberta-v3-xsmall": 384,
         "microsoft/deberta-v3-base": 768,
         "microsoft/deberta-v3-large": 1024,
@@ -41,7 +40,8 @@ class T2VPretrainedReranker(nn.Module):
         # We intialize the weights so that the second order stats of BERT embeddings are preserved
         # NOTE: This is only used for the t2v embedding
         model_emb_size = self.EMB_DIM_SIZE[model_name]
-        self.embedding_projection: nn.Linear = nn.Linear(768, model_emb_size)
+        print(f"The model emb size : {model_emb_size}")
+        self.embedding_projection: nn.Linear = nn.Linear(384, model_emb_size)
         nn.init.normal_(self.embedding_projection.weight, mean=0, std=std)
 
         deberta = DebertaV2Model.from_pretrained(model_name)
@@ -80,7 +80,7 @@ class T2VPretrainedReranker(nn.Module):
         tool_embedding = tool_embedding.to(self.device)
 
         # tool_embedding_proj: [batch_size, num_tools, 384]
-        tool_embedding_proj = self.embedding_projection(tool_embedding)
+        tool_embedding_proj = self.embedding_projection(tool_embedding).unsqueeze(1)
 
         if self.use_cls:
             # Insert the cls token id at the beginning of the input_ids
@@ -216,7 +216,7 @@ def train(args):
         use_cls=True,
         use_sep=True,
     ).to(device)
-    print(f"Model: {model}")
+    print(f"Model: {model_name}")
 
     valid_dataset = T2VDatasetQueryNT(
         data_dir=test_data_dir,
@@ -233,7 +233,7 @@ def train(args):
         batch_size=args.batch_size,
         shuffle=False,
         collate_fn=lambda x: t2v_collator_query_nt(x, tokenizer=tokenizer),
-        num_workers=4,
+        num_workers=0,
     )
 
     checkpoint_dir = args.checkpoint_dir or os.getcwd()
@@ -249,7 +249,7 @@ def train(args):
         checkpoint_dir, f"model_epoch_{checkpoint_epoch}.pt"
     )
     print(f"Loading checkpoint: {checkpoint_file_path}")
-    checkpoint = torch.load(checkpoint_file_path)
+    checkpoint = torch.load(checkpoint_file_path, weights_only=False)
     model.load_state_dict(checkpoint["model_state_dict"])
 
     with torch.no_grad():

@@ -27,7 +27,7 @@ import random
 import time
 from pathlib import Path
 from typing import Any, Callable, Collection, Optional, Type, TypeVar
-
+import pickle
 
 from openai import AzureOpenAI
 from tqdm import tqdm
@@ -37,11 +37,6 @@ from toolrag.models.mxbai import MxbaiModel
 
 Q = TypeVar("Q", bound=Callable[..., Any])
 
-client = AzureOpenAI(
-    azure_endpoint=os.environ["AZURE_ENDPOINT"],
-    api_key=os.environ["AZURE_OPENAI_API_KEY"],
-    api_version=os.environ["AZURE_OPENAI_API_VERSION"],
-)
 
 
 # define a retry decorator
@@ -219,6 +214,8 @@ if __name__ == "__main__":
     output_file_name = args.output_file_name
     output_path = Path(args.output_path)
     output_data_path = output_path / output_file_name
+    output_pickle_path = output_data_path.with_suffix('.pkl')
+
 
     assert output_file_name.endswith(".json") or output_file_name.endswith(
         ".jsonl"
@@ -276,8 +273,25 @@ if __name__ == "__main__":
                     json.dump(example_base_embedding_list, f, indent=4)
 
     # Final save
+    fixed_embeddings = {}
     print("Saving data to", output_data_path)
     with open(output_data_path, "w") as f:
         json.dump(example_base_embedding_list, f, indent=4)
+    for entry in example_base_embedding_list:
+        functions = entry.get("functions", [])
+        embedding = entry.get("function_embedding")
+        for fn in functions:
+            # Overwrite or assign — assume each function is a unique entry
+            # if fn not in fixed_embeddings:
+            fixed_embeddings[fn] = embedding
+    print(f"fixed_embeddings {fixed_embeddings}")
+
+    print(f"Converted {len(fixed_embeddings)} tools.")
+
+    # Save the fixed dict-based version
+    with open(f"{output_pickle_path}", "wb") as f:
+        pickle.dump(fixed_embeddings, f)
+
+    print(f"Saved: {output_pickle_path}")
 
     os.chmod(output_data_path, 0o777)

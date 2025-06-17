@@ -6,27 +6,31 @@ import gc
 import os
 import argparse
 from collections import defaultdict
-
 import numpy as np
 import re
 import torch
 import torch.nn as nn
-from toolrag.tool_reranker.evaluations import top_k_recall
 import wandb
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import AutoTokenizer, DebertaV2Model
 
+from toolrag.tool_reranker.evaluations import top_k_recall
 from toolrag.tool_reranker.t2v_datasets import T2VDatasetQueryNT, t2v_collator_query_nt
 from toolrag.tool_reranker.utils import set_seed
 
+from functools import partial
+
+def collate_fn(batch, tokenizer):
+    return t2v_collator_query_nt(batch, tokenizer=tokenizer)
 
 class T2VPretrainedReranker(nn.Module):
     EMB_DIM_SIZE = {
         "microsoft/deberta-v3-xsmall": 384,
         "microsoft/deberta-v3-base": 768,
         "microsoft/deberta-v3-large": 1024,
+        "bert-base-uncased": 768,
     }
 
     def __init__(
@@ -46,7 +50,7 @@ class T2VPretrainedReranker(nn.Module):
         # We intialize the weights so that the second order stats of BERT embeddings are preserved
         # NOTE: This is only used for the t2v embedding
         model_emb_size = self.EMB_DIM_SIZE[model_name]
-        self.embedding_projection: nn.Linear = nn.Linear(768, model_emb_size)
+        self.embedding_projection: nn.Linear = nn.Linear(384, model_emb_size)
         nn.init.normal_(self.embedding_projection.weight, mean=0, std=std)
 
         deberta = DebertaV2Model.from_pretrained(model_name)
@@ -85,7 +89,7 @@ class T2VPretrainedReranker(nn.Module):
         tool_embedding = tool_embedding.to(self.device)
 
         # tool_embedding_proj: [batch_size, num_tools, 384]
-        tool_embedding_proj = self.embedding_projection(tool_embedding)
+        tool_embedding_proj = self.embedding_projection(tool_embedding).unsqueeze(1)
 
         if self.use_cls:
             # Insert the cls token id at the beginning of the input_ids
@@ -294,19 +298,19 @@ def train(args):
 
     print(f"Train dataset size: {len(train_dataset)}")
     print(f"Valid dataset size: {len(valid_dataset)}")
-
+    train_collate_fn = partial(collate_fn, tokenizer=tokenizer)
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size // iters_to_accumulate,
         shuffle=True,
-        collate_fn=lambda x: t2v_collator_query_nt(x, tokenizer=tokenizer),
+        collate_fn=train_collate_fn,
         num_workers=4,
     )
     valid_loader = DataLoader(
         valid_dataset,
         batch_size=args.batch_size // iters_to_accumulate,
         shuffle=False,
-        collate_fn=lambda x: t2v_collator_query_nt(x, tokenizer=tokenizer),
+        collate_fn=train_collate_fn,
         num_workers=4,
     )
 
@@ -347,7 +351,7 @@ def train(args):
     # if latest_checkpoint:
     if latest_checkpoint:
         print(f"Loading checkpoint: {latest_checkpoint}")
-        checkpoint = torch.load(latest_checkpoint)
+        checkpoint = torch.load(latest_checkpoint, weights_only=False)
         start_epoch = checkpoint["epoch"]
 
         if start_epoch < num_epochs:
@@ -505,6 +509,11 @@ def train(args):
 if __name__ == "__main__":
     args = parse_args()
     set_seed(args.seed)
+    if args.wandb_name:
+        wandb.init(project="t2v", config=args, name=args.wandb_name)
+    else:
+        print("No wandb_name provided. Initializing Weights & Biases in 'disabled' mode.")
+        wandb.init(project="t2v", config=args, mode="disabled")
     train(args)
 
     gc.collect()
