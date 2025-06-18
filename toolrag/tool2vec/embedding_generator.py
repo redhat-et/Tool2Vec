@@ -278,7 +278,6 @@ if __name__ == "__main__":
     for entry in example_base_embedding_list:
         functions = entry.get("functions", [])
         embedding = entry.get("function_embedding")
-        print(f"num of examples {len(example_base_embedding_list)}")
         for fn in functions:
             # Overwrite or assign — assume each function is a unique entry
             # if fn not in fixed_embeddings:
