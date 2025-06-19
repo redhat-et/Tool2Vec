@@ -12,7 +12,8 @@ from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
 import wandb
 from toolrag.mlc.format_train_data import MLCDataset
-from toolrag.tool_reranker.utils import set_seed
+from transformers import AutoConfig
+
 
 
 def validate(args, model, tokenizer, device, current_step, epoch) -> None:
@@ -83,17 +84,28 @@ def validate(args, model, tokenizer, device, current_step, epoch) -> None:
 def train(args: argparse.Namespace) -> None:
     # Load the tokenizer and model
     model_name = args.model_name
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForSequenceClassification.from_pretrained(
-        model_name, num_labels=args.num_labels
+    tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=False)
+
+    config = AutoConfig.from_pretrained(
+        model_name,
+        num_labels=args.num_labels,
+        problem_type="multi_label_classification"
     )
+    model = AutoModelForSequenceClassification.from_pretrained(
+        model_name,
+        config=config
+    )
+
 
     # Move the model to the GPU if available
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
     # load mlc_training.pt
-    dataset: MLCDataset = torch.load(args.train_data_path)
+    # dataset: MLCDataset = torch.load(args.train_data_path)
+    torch.serialization.add_safe_globals({'MLCDataset': MLCDataset})
+    dataset: MLCDataset = torch.load(args.train_data_path, weights_only=False)
+
     dataloader = DataLoader(dataset, batch_size=64)
 
     # Set up the optimizer
@@ -119,8 +131,11 @@ def train(args: argparse.Namespace) -> None:
                 return_tensors="pt",
             )
             b_input = b_input.to(device)
-            b_labels = b_labels.to(device)
+            b_labels = b_labels.float().to(device)
 
+            # Add debug prints here
+            print("b_input batch size:", next(iter(b_input.values())).shape[0])  # batch size from tokenizer output
+            print("b_labels shape:", b_labels.shape)
             # Forward pass
             outputs = model(**b_input, labels=b_labels)
             loss = outputs.loss
@@ -226,12 +241,13 @@ def parse_args() -> argparse.Namespace:
         help="Path to the file containing all tools data",
     )
     args = parser.parse_args()
+    
     return args
 
 
 if __name__ == "__main__":
     args = parse_args()
-    set_seed(args.seed)
+    # set_seed(args.seed)
     if args.wandb_name:
         wandb.init(project="t2v", config=args, name=args.wandb_name)
     train(args)
