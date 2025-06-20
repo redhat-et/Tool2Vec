@@ -101,7 +101,6 @@ def train(args: argparse.Namespace) -> None:
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model.to(device)
 
-    # load mlc_training.pt
     # dataset: MLCDataset = torch.load(args.train_data_path)
     torch.serialization.add_safe_globals({'MLCDataset': MLCDataset})
     dataset: MLCDataset = torch.load(args.train_data_path, weights_only=False)
