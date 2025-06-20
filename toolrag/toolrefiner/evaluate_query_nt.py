@@ -249,7 +249,7 @@ def train(args):
         checkpoint_dir, f"model_epoch_{checkpoint_epoch}.pt"
     )
     print(f"Loading checkpoint: {checkpoint_file_path}")
-    checkpoint = torch.load(checkpoint_file_path)
+    checkpoint = torch.load(args.train_data_path, weights_only=False)
     model.load_state_dict(checkpoint["model_state_dict"])
 
     with torch.no_grad():

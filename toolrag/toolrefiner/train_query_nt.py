@@ -347,7 +347,7 @@ def train(args):
     # if latest_checkpoint:
     if latest_checkpoint:
         print(f"Loading checkpoint: {latest_checkpoint}")
-        checkpoint = torch.load(latest_checkpoint)
+        checkpoint = torch.load(args.train_data_path, weights_only=False)
         start_epoch = checkpoint["epoch"]
 
         if start_epoch < num_epochs:
