@@ -133,10 +133,14 @@ def train(args: argparse.Namespace) -> None:
             b_input = b_input.to(device)
             b_labels = b_labels.float().to(device)
 
+            # Add debug prints here
+            print("b_input batch size:", next(iter(b_input.values())).shape[0])  # batch size from tokenizer output
+            print("b_labels shape:", b_labels.shape)
+            # Forward pass
             outputs = model(**b_input, labels=b_labels)
             loss = outputs.loss
 
-            # Warmup and LR scheduler
+            # Update learning rate
             if current_step < args.num_linear_warmup_steps:
                 new_lr = args.lr * current_step / args.num_linear_warmup_steps
                 for param_group in optimizer.param_groups:
@@ -144,10 +148,12 @@ def train(args: argparse.Namespace) -> None:
             else:
                 lr_scheduler.step()
 
+            # Take gradient step
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
+            # Log the loss
             if current_step % 10 == 0:
                 wandb.log(
                     {
@@ -158,53 +164,44 @@ def train(args: argparse.Namespace) -> None:
                 )
             current_step += 1
 
-        # Run validation every epoch
-        recalls_at_k = validate(args, model, tokenizer, device, current_step, epoch + 1)
+        # Get validation performance
+        if (epoch + 1) % 10 == 0:
+            recalls_at_k = validate(
+                args, model, tokenizer, device, current_step, epoch + 1
+            )
 
-        # Save checkpoint after first epoch or if better recall
-        if args.checkpoint_dir:
-            os.makedirs(args.checkpoint_dir, exist_ok=True)
+            # Save model checkpoint
+            if args.checkpoint_dir:
+                if recalls_at_k[3] > best_recall_at_3_so_far:
+                    best_recall_at_3_so_far = recalls_at_k[3]
+                    checkpoint_path = os.path.join(
+                        args.checkpoint_dir, "model_recall_at_3.pt"
+                    )
+                    torch.save(
+                        {
+                            "epoch": epoch + 1,
+                            "model_state_dict": model.state_dict(),
+                            "optimizer_state_dict": optimizer.state_dict(),
+                            "lr_scheduler_state_dict": lr_scheduler.state_dict(),
+                        },
+                        checkpoint_path,
+                    )
 
-            # Save a checkpoint after the first epoch
-            if epoch == 0:
-                checkpoint_path = os.path.join(args.checkpoint_dir, f"model_recall_at_1.pt")
-                torch.save(
-                    {
-                        "epoch": epoch + 1,
-                        "model_state_dict": model.state_dict(),
-                        "optimizer_state_dict": optimizer.state_dict(),
-                        "lr_scheduler_state_dict": lr_scheduler.state_dict(),
-                    },
-                    checkpoint_path,
-                )
+                if recalls_at_k[5] > best_recall_at_5_so_far:
+                    best_recall_at_5_so_far = recalls_at_k[5]
+                    checkpoint_path = os.path.join(
+                        args.checkpoint_dir, "model_recall_at_5.pt"
+                    )
+                    torch.save(
+                        {
+                            "epoch": epoch + 1,
+                            "model_state_dict": model.state_dict(),
+                            "optimizer_state_dict": optimizer.state_dict(),
+                            "lr_scheduler_state_dict": lr_scheduler.state_dict(),
+                        },
+                        checkpoint_path,
+                    )
 
-            # Save best recall@3
-            if 3 in recalls_at_k and recalls_at_k[3] > best_recall_at_3_so_far:
-                best_recall_at_3_so_far = recalls_at_k[3]
-                checkpoint_path = os.path.join(args.checkpoint_dir, "model_recall_at_3.pt")
-                torch.save(
-                    {
-                        "epoch": epoch + 1,
-                        "model_state_dict": model.state_dict(),
-                        "optimizer_state_dict": optimizer.state_dict(),
-                        "lr_scheduler_state_dict": lr_scheduler.state_dict(),
-                    },
-                    checkpoint_path,
-                )
-
-            # Save best recall@5
-            if 5 in recalls_at_k and recalls_at_k[5] > best_recall_at_5_so_far:
-                best_recall_at_5_so_far = recalls_at_k[5]
-                checkpoint_path = os.path.join(args.checkpoint_dir, "model_recall_at_5.pt")
-                torch.save(
-                    {
-                        "epoch": epoch + 1,
-                        "model_state_dict": model.state_dict(),
-                        "optimizer_state_dict": optimizer.state_dict(),
-                        "lr_scheduler_state_dict": lr_scheduler.state_dict(),
-                    },
-                    checkpoint_path,
-                )
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
@@ -252,10 +249,8 @@ if __name__ == "__main__":
     args = parse_args()
     # set_seed(args.seed)
     if args.wandb_name:
-        # If a wandb_name is provided, initialize normally
         wandb.init(project="t2v", config=args, name=args.wandb_name)
     else:
-        # If no wandb_name, initialize in 'disabled' mode
         print("No wandb_name provided. Initializing Weights & Biases in 'disabled' mode.")
         wandb.init(project="t2v", config=args, mode="disabled")
     train(args)
