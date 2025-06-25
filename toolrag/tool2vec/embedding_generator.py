@@ -214,6 +214,8 @@ if __name__ == "__main__":
     output_file_name = args.output_file_name
     output_path = Path(args.output_path)
     output_data_path = output_path / output_file_name
+    output_pickle_path = output_data_path.with_suffix('.pkl')
+
 
     assert output_file_name.endswith(".json") or output_file_name.endswith(
         ".jsonl"
@@ -287,9 +289,9 @@ if __name__ == "__main__":
     print(f"Converted {len(fixed_embeddings)} tools.")
 
     # Save the fixed dict-based version
-    with open("output/function_descriptions_embeddings.pkl", "wb") as f:
+    with open(f"{output_pickle_path}", "wb") as f:
         pickle.dump(fixed_embeddings, f)
 
-    print("Saved: output/function_descriptions_embeddings.pkl")
+    print(f"Saved: {output_pickle_path}")
 
     os.chmod(output_data_path, 0o777)
