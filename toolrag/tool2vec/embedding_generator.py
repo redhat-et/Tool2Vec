@@ -216,6 +216,8 @@ if __name__ == "__main__":
     output_data_path = output_path / output_file_name
     output_pickle_path = output_data_path.with_suffix('.pkl')
 
+    # Create the output directory if it doesn't exist
+    os.makedirs(os.path.dirname(output_data_path), exist_ok=True)
 
     assert output_file_name.endswith(".json") or output_file_name.endswith(
         ".jsonl"
@@ -284,9 +286,6 @@ if __name__ == "__main__":
             # Overwrite or assign — assume each function is a unique entry
             # if fn not in fixed_embeddings:
             fixed_embeddings[fn] = embedding
-    print(f"fixed_embeddings {fixed_embeddings}")
-
-    print(f"Converted {len(fixed_embeddings)} tools.")
 
     # Save the fixed dict-based version
     with open(f"{output_pickle_path}", "wb") as f:
