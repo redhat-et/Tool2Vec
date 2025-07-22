@@ -1,7 +1,7 @@
 import argparse
 import json
 import os
-
+import sys
 import numpy as np
 import torch
 from torch.optim import AdamW
@@ -11,9 +11,10 @@ from tqdm.auto import tqdm
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 import torch.serialization  # Add this import if not already there
 import wandb
+from tqdm import tqdm, trange
 from transformers import AutoConfig
 from toolrag.mlc.format_train_data import MLCDataset
-# from toolrag.tool_reranker.utils import set_seed
+from toolrag.tool_reranker.utils import set_seed
 
 
 def validate(args, model, tokenizer, device, current_step, epoch) -> None:
@@ -119,10 +120,11 @@ def train(args: argparse.Namespace) -> None:
     current_step = 0
     best_recall_at_3_so_far = -1
     best_recall_at_5_so_far = -1
-    for epoch in tqdm(range(args.epochs), desc="Epochs"):
+    print(f"Total number of batches per epoch: {len(dataloader)}")
+    for epoch in trange(args.epochs, desc="Epochs"):
         model.train()
 
-        for batch in tqdm(dataloader, desc="Batches", leave=False):
+        for batch in tqdm(dataloader, desc="Batches", disable=True):
             b_instructions, b_labels = batch
             b_input = tokenizer(
                 b_instructions,
@@ -133,9 +135,7 @@ def train(args: argparse.Namespace) -> None:
             b_input = b_input.to(device)
             b_labels = b_labels.float().to(device)
 
-            # Add debug prints here
-            print("b_input batch size:", next(iter(b_input.values())).shape[0])  # batch size from tokenizer output
-            print("b_labels shape:", b_labels.shape)
+
             # Forward pass
             outputs = model(**b_input, labels=b_labels)
             loss = outputs.loss
@@ -165,7 +165,7 @@ def train(args: argparse.Namespace) -> None:
             current_step += 1
 
         # Get validation performance
-        if (epoch + 1) % 10 == 0:
+        if (epoch + 1) % 5 == 0:
             recalls_at_k = validate(
                 args, model, tokenizer, device, current_step, epoch + 1
             )
@@ -247,7 +247,7 @@ def parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = parse_args()
-    # set_seed(args.seed)
+    set_seed(args.seed)
     if args.wandb_name:
         wandb.init(project="t2v", config=args, name=args.wandb_name)
     else:
