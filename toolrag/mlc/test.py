@@ -1,6 +1,5 @@
 import argparse
 import json
-
 import numpy as np
 import torch
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
@@ -15,8 +14,9 @@ def test(args) -> None:
     )
 
     # Move the model to the GPU if available
-    device = torch.device("cuda:0")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
+
 
     # Load checkpoint
     checkpoint_path = args.model_path

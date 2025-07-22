@@ -216,12 +216,12 @@ if __name__ == "__main__":
     output_data_path = output_path / output_file_name
     output_pickle_path = output_data_path.with_suffix('.pkl')
 
-    # Create the output directory if it doesn't exist
-    os.makedirs(os.path.dirname(output_data_path), exist_ok=True)
+    # Ensure output path exists
+    os.makedirs(output_path, exist_ok=True)
 
     assert output_file_name.endswith(".json") or output_file_name.endswith(
         ".jsonl"
-    ), "Output file format must be json"
+    ), "Output file format must be .json or .jsonl"
 
     if not data_path.exists():
         raise ValueError(f"Data file {data_path} does not exist")
@@ -235,62 +235,69 @@ if __name__ == "__main__":
     if args.num_data_points:
         data = data[: args.num_data_points]
 
-    if args.model == "e5-small" or args.model == "e5-base" or args.model == "e5-large":
+    # Load embedding model
+    if args.model in {"e5-small", "e5-base", "e5-large"}:
         print(f"Loading {args.model} model")
-
-        if args.model == "e5-small":
-            e5_model = E5Model("intfloat/e5-small-v2")
-        elif args.model == "e5-large":
-            e5_model = E5Model("intfloat/e5-large-v2")
-        else:
-            e5_model = E5Model("intfloat/e5-base-v2")
+        model_name = {
+            "e5-small": "intfloat/e5-small-v2",
+            "e5-base": "intfloat/e5-base-v2",
+            "e5-large": "intfloat/e5-large-v2"
+        }[args.model]
+        e5_model = E5Model(model_name)
 
         if args.use_checkpoint:
             assert args.checkpoint_path is not None, "Checkpoint path must be provided"
             print(f"Loading checkpoint from {args.checkpoint_path}")
             e5_model.load_checkpoint(args.checkpoint_path)
+
     elif args.model == "mxbai-large":
+        print("Loading mxbai-large model")
         mxbai_model = MxbaiModel("mixedbread-ai/mxbai-embed-large-v1")
+
     else:
         print(f"Using model: {args.model}")
+
     with concurrent.futures.ThreadPoolExecutor(
         max_workers=args.max_workers
     ) as executor:
         futures = [executor.submit(process_item, args, d, args.debug) for d in data]
 
         idx = 0
-        for future in tqdm(
-            concurrent.futures.as_completed(futures), total=len(futures)
-        ):
+        for future in tqdm(concurrent.futures.as_completed(futures), total=len(futures)):
             result = future.result()
             if result is not None:
                 example_base_embedding_list.append(result)
 
-            # Save periodically
             idx += 1
-
             if idx % args.freq == 0:
-                print("Saving data to", output_data_path)
+                print("Saving intermediate data to", output_data_path)
                 with open(output_data_path, "w") as f:
                     json.dump(example_base_embedding_list, f, indent=4)
 
-    # Final save
-    fixed_embeddings = {}
-    print("Saving data to", output_data_path)
+    # Final JSON save
+    print("Saving full data to", output_data_path)
     with open(output_data_path, "w") as f:
         json.dump(example_base_embedding_list, f, indent=4)
+
+    # Generate fixed embeddings
+    fixed_embeddings = {}
     for entry in example_base_embedding_list:
         functions = entry.get("functions", [])
         embedding = entry.get("function_embedding")
+        if not functions:
+            print("Warning: No functions found for instruction:", entry.get("instruction", "")[:80])
         for fn in functions:
-            # Overwrite or assign — assume each function is a unique entry
-            # if fn not in fixed_embeddings:
             fixed_embeddings[fn] = embedding
 
-    # Save the fixed dict-based version
-    with open(f"{output_pickle_path}", "wb") as f:
-        pickle.dump(fixed_embeddings, f)
+    print(f"Converted {len(fixed_embeddings)} unique tools to embeddings.")
 
-    print(f"Saved: {output_pickle_path}")
+    # Save to .pkl file
+    try:
+        with open(output_pickle_path, "wb") as f:
+            pickle.dump(fixed_embeddings, f)
+        print(f"Saved: {output_pickle_path}")
+    except Exception as e:
+        print("Error saving .pkl file:", e)
 
+    # Set permissions
     os.chmod(output_data_path, 0o777)
