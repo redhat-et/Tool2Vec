@@ -1,64 +1,53 @@
 # ToolRefiner
 
 ## Model Training
+
+You must provide your own `train.json`, `val.json`, and `test.json` files (see the main README for format).
+
+To train the reranker model, run:
+```sh
+PYTHONPATH=. python toolrag/run_full_pipeline.py \
+  --train-file toolrag/train.json \
+  --val-file toolrag/val.json \
+  --test-file toolrag/test.json
 ```
-MODEL="microsoft/deberta-v3-xsmall"
-LR=8e-4
-STD=0.2
-WD=0.01
-BATCH_SIZE=32
-EPOCH=30
-TOOL=64
-WR=100
 
-TRAIN_DATA_PATH="...json"
-VAL_DATA_PATH="...json"
-EMBEDDING_DATA_PATH="...pkl"
-TOOL_NAME_PATH="...json"
-TRAIN_TOP_K_DIR="...json"
-VAL_TOP_K_DIR="...json"
-CHECKPOINT_DIR="..."
-WANDB_NAME="..."
+This will generate embeddings, train the model, and evaluate on the test set.
 
-python train_query_nt.py \
-    --model $MODEL \
-    --lr $LR \
+Alternatively, to run training directly:
+```sh
+PYTHONPATH=. python toolrag/toolrefiner/train_query_nt.py \
+    --model "microsoft/deberta-v3-base" \
+    --lr 8e-4 \
     --use_amp \
-    --std $STD \
-    --wd $WD \
-    --num_tools_to_be_presented $TOOL \
-    --num_linear_warmup_steps $WR \
-    --batch_size $BATCH_SIZE \
-    --num_epochs $EPOCH \
-    --training_data_dir ${TRAIN_DATA_PATH} \
-    --test_data_dir ${VAL_DATA_PATH} \
-    --tool_embedding_dir ${EMBEDDING_DATA_PATH} \
-    --tool_name_dir ${TOOL_NAME_PATH} \
-    --train_tool_top_k_retrieval_dir ${TRAIN_TOP_K_DIR} \
-    --valid_tool_top_k_retrieval_dir ${VAL_TOP_K_DIR} \
-    --checkpoint_dir ${CHECKPOINT_DIR} \
-    --wandb_name $WANDB_NAME \
+    --std 0.2 \
+    --wd 0.01 \
+    --num_tools_to_be_presented 16 \
+    --num_linear_warmup_steps 100 \
+    --batch_size 4 \
+    --num_epochs 1 \
+    --training_data_dir output/train_embeddings_embedded.json \
+    --test_data_dir output/val_embeddings_embedded.json \
+    --tool_embedding_dir output/train_embeddings_embedded.pkl \
+    --tool_name_dir toolrag/train.json \
+    --train_tool_top_k_retrieval_dir train_top_k.json \
+    --valid_tool_top_k_retrieval_dir val_top_k.json \
+    --checkpoint_dir toolrag/toolrefiner/checkpoints/
 ```
 
 ## Model Evaluation
-```
-BATCH_SIZE=64
-TOOL=64
 
-CHECKPOINT_DIR="..."
-CHECKPOINT_EPOCH="..."
-TEST_DIR="...json"
-EMBEDDING_DATA_PATH="...pkl"
-TOOL_NAME_PATH="...json"
-TEST_TOP_K_DIR="...json"
-
-python evaluate_query_nt.py \
-    --checkpoint_dir ${CHECKPOINT_DIR} \
-    --checkpoint_epoch $CHECKPOINT_EPOCH \
-    --batch_size $BATCH_SIZE
-     --test_data_dir ${VAL_DATA_PATH} \
-    --tool_embedding_dir ${EMBEDDING_DATA_PATH} \
-    --tool_name_dir ${TOOL_NAME_PATH} \
-    --valid_tool_top_k_retrieval_dir ${VAL_TOP_K_DIR} \
-    --num_tools_to_be_presented $TOOL
+To evaluate the trained model on the test set:
+```sh
+PYTHONPATH=. python toolrag/toolrefiner/query_tool_selector.py \
+    --query "<your query>" \
+    --model_name microsoft/deberta-v3-base \
+    --checkpoint_path toolrag/toolrefiner/checkpoints/model_epoch_1.pt \
+    --tool_embeddings_path output/test_embeddings_embedded.pkl \
+    --tool_names_path toolrag/test.json \
+    --tool_embedding_dim 768
 ```
+
+## Notes
+- Always set `PYTHONPATH=. ` when running scripts that import from the toolrag package.
+- See the main README for environment setup and data preparation.

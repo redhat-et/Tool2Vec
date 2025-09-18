@@ -24,7 +24,7 @@ class T2VPretrainedReranker(nn.Module):
     }
 
     def __init__(
-        self, model_name, std=0.2, num_layer_to_freeze=0, use_cls=False, use_sep=False
+        self, model_name, std=0.2, num_layer_to_freeze=0, use_cls=False, use_sep=False, tool_embedding_dim=768
     ):
         super().__init__()
         self.use_cls = use_cls
@@ -41,7 +41,7 @@ class T2VPretrainedReranker(nn.Module):
         # NOTE: This is only used for the t2v embedding
         model_emb_size = self.EMB_DIM_SIZE[model_name]
         print(f"The model emb size : {model_emb_size}")
-        self.embedding_projection: nn.Linear = nn.Linear(384, model_emb_size)
+        self.embedding_projection: nn.Linear = nn.Linear(tool_embedding_dim, model_emb_size)
         nn.init.normal_(self.embedding_projection.weight, mean=0, std=std)
 
         deberta = DebertaV2Model.from_pretrained(model_name)
@@ -56,7 +56,7 @@ class T2VPretrainedReranker(nn.Module):
         # Store the CLS and SEP token embeddings to be inserted later
         # NOTE: Just store the token ids for now, will need to add this at the
         # forward() method and pass it do the embedding layer.
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=False)
         cls_token_id: int = tokenizer.cls_token_id
         sep_token_id: int = tokenizer.sep_token_id
 
@@ -80,7 +80,7 @@ class T2VPretrainedReranker(nn.Module):
         tool_embedding = tool_embedding.to(self.device)
 
         # tool_embedding_proj: [batch_size, num_tools, 384]
-        tool_embedding_proj = self.embedding_projection(tool_embedding).unsqueeze(1)
+        tool_embedding_proj = self.embedding_projection(tool_embedding)
 
         if self.use_cls:
             # Insert the cls token id at the beginning of the input_ids
@@ -208,13 +208,25 @@ def train(args):
     tool_name_dir = args.tool_name_dir
     valid_tool_top_k_retrieval_dir = args.valid_tool_top_k_retrieval_dir
 
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=False)
+    
+    # Detect tool embedding dimensions from the tool embeddings file
+    import pickle
+    with open(tool_embedding_dir, 'rb') as f:
+        tool_embeddings = pickle.load(f)
+    
+    # Get the dimension of the first embedding
+    first_embedding = next(iter(tool_embeddings.values()))
+    tool_embedding_dim = len(first_embedding) if hasattr(first_embedding, '__len__') else 768
+    print(f"Detected tool embedding dimension: {tool_embedding_dim}")
+    
     model = T2VPretrainedReranker(
         model_name=model_name,
         std=0.2,
         num_layer_to_freeze=0,
         use_cls=True,
         use_sep=True,
+        tool_embedding_dim=tool_embedding_dim,
     ).to(device)
     print(f"Model: {model_name}")
 
@@ -237,7 +249,13 @@ def train(args):
     )
 
     checkpoint_dir = args.checkpoint_dir or os.getcwd()
-    os.makedirs(checkpoint_dir, exist_ok=True)
+    # If checkpoint_dir is a file, use its parent directory for os.makedirs
+    if os.path.splitext(checkpoint_dir)[1]:
+        # It's a file path
+        checkpoint_dir_parent = os.path.dirname(checkpoint_dir)
+        os.makedirs(checkpoint_dir_parent, exist_ok=True)
+    else:
+        os.makedirs(checkpoint_dir, exist_ok=True)
 
     # print model parameter count
     num_params = sum(p.numel() for p in model.parameters())
@@ -245,9 +263,10 @@ def train(args):
 
     # Load the most recent checkpoint if it exists
     checkpoint_epoch = args.checkpoint_epoch
-    checkpoint_file_path = os.path.join(
-        checkpoint_dir, f"model_epoch_{checkpoint_epoch}.pt"
-    )
+    if checkpoint_dir.endswith('.pt'):
+        checkpoint_file_path = checkpoint_dir
+    else:
+        checkpoint_file_path = os.path.join(checkpoint_dir, f"model_epoch_{checkpoint_epoch}.pt")
     print(f"Loading checkpoint: {checkpoint_file_path}")
     checkpoint = torch.load(checkpoint_file_path, weights_only=False)
     model.load_state_dict(checkpoint["model_state_dict"])

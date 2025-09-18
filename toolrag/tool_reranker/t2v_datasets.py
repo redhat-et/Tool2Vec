@@ -21,13 +21,55 @@ class T2VDatasetQueryNT(Dataset):
 
     def __getitem__(self, idx):
         entry = self.data[idx]
-        return {
-            "query": entry["refined_instruction"] or entry["instruction"],
-            "label": torch.tensor([1.0]),
-            "tool_embedding": torch.tensor(self.tool_embeddings[entry["functions"][0]]).unsqueeze(0),
-            "true_tools": entry["functions"],
-            "labeled_tools": entry["functions"],
-        }
+        
+        # Handle both old format (functions, instruction) and new format (query, tool_name)
+        if "query" in entry and "tool_name" in entry:
+            # New format from tool_embeddings_test.json
+            query = entry["query"]
+            tool_name = entry["tool_name"]
+            
+            # Get tool embedding
+            if tool_name in self.tool_embeddings:
+                tool_embedding = torch.tensor(self.tool_embeddings[tool_name]).unsqueeze(0)
+            else:
+                # Fallback: use a zero embedding if tool not found
+                if self.tool_embeddings:
+                    first_embedding = next(iter(self.tool_embeddings.values()))
+                    embedding_dim = len(first_embedding) if hasattr(first_embedding, '__len__') else 384
+                else:
+                    embedding_dim = 384
+                tool_embedding = torch.zeros(1, embedding_dim)
+            
+            return {
+                "query": query,
+                "label": torch.tensor([1.0]),
+                "tool_embedding": tool_embedding,
+                "true_tools": [tool_name],
+                "labeled_tools": [tool_name],
+            }
+        else:
+            # Old format (backward compatibility)
+            query = entry.get("refined_instruction") or entry.get("instruction", "")
+            functions = entry.get("functions", [])
+            
+            if functions and functions[0] in self.tool_embeddings:
+                tool_embedding = torch.tensor(self.tool_embeddings[functions[0]]).unsqueeze(0)
+            else:
+                # Fallback: use a zero embedding if tool not found
+                if self.tool_embeddings:
+                    first_embedding = next(iter(self.tool_embeddings.values()))
+                    embedding_dim = len(first_embedding) if hasattr(first_embedding, '__len__') else 384
+                else:
+                    embedding_dim = 384
+                tool_embedding = torch.zeros(1, embedding_dim)
+            
+            return {
+                "query": query,
+                "label": torch.tensor([1.0]),
+                "tool_embedding": tool_embedding,
+                "true_tools": functions,
+                "labeled_tools": functions,
+            }
     
 def t2v_collator_query_nt(batch, tokenizer):
     queries = [item["query"] for item in batch]
@@ -36,7 +78,7 @@ def t2v_collator_query_nt(batch, tokenizer):
     return {
         "input_ids": encodings["input_ids"],
         "attention_mask": encodings["attention_mask"],
-        "tool_embedding": torch.stack([item["tool_embedding"].squeeze(0) for item in batch]),
+        "tool_embedding": torch.stack([item["tool_embedding"] for item in batch]),
         "label": torch.stack([item["label"] for item in batch]),
         "true_tools": [item["true_tools"] for item in batch],
         "labeled_tools": [item["labeled_tools"] for item in batch],

@@ -6,35 +6,36 @@ import gc
 import os
 import argparse
 from collections import defaultdict
+
 import numpy as np
 import re
 import torch
 import torch.nn as nn
+from toolrag.tool_reranker.evaluations import top_k_recall
 import wandb
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers import AutoTokenizer, DebertaV2Model
 
-from toolrag.tool_reranker.evaluations import top_k_recall
 from toolrag.tool_reranker.t2v_datasets import T2VDatasetQueryNT, t2v_collator_query_nt
 from toolrag.tool_reranker.utils import set_seed
 
+import sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+
 from functools import partial
 
-def collate_fn(batch, tokenizer):
-    return t2v_collator_query_nt(batch, tokenizer=tokenizer)
 
 class T2VPretrainedReranker(nn.Module):
     EMB_DIM_SIZE = {
         "microsoft/deberta-v3-xsmall": 384,
         "microsoft/deberta-v3-base": 768,
         "microsoft/deberta-v3-large": 1024,
-        "bert-base-uncased": 768,
     }
 
     def __init__(
-        self, model_name, std=0.2, num_layer_to_freeze=0, use_cls=False, use_sep=False
+        self, model_name, std=0.2, num_layer_to_freeze=0, use_cls=False, use_sep=False, tool_embedding_dim=768
     ):
         super().__init__()
         self.use_cls = use_cls
@@ -50,7 +51,8 @@ class T2VPretrainedReranker(nn.Module):
         # We intialize the weights so that the second order stats of BERT embeddings are preserved
         # NOTE: This is only used for the t2v embedding
         model_emb_size = self.EMB_DIM_SIZE[model_name]
-        self.embedding_projection: nn.Linear = nn.Linear(384, model_emb_size)
+
+        self.embedding_projection: nn.Linear = nn.Linear(tool_embedding_dim, model_emb_size)
         nn.init.normal_(self.embedding_projection.weight, mean=0, std=std)
 
         deberta = DebertaV2Model.from_pretrained(model_name)
@@ -65,7 +67,7 @@ class T2VPretrainedReranker(nn.Module):
         # Store the CLS and SEP token embeddings to be inserted later
         # NOTE: Just store the token ids for now, will need to add this at the
         # forward() method and pass it do the embedding layer.
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=False)
         cls_token_id: int = tokenizer.cls_token_id
         sep_token_id: int = tokenizer.sep_token_id
 
@@ -89,7 +91,7 @@ class T2VPretrainedReranker(nn.Module):
         tool_embedding = tool_embedding.to(self.device)
 
         # tool_embedding_proj: [batch_size, num_tools, 384]
-        tool_embedding_proj = self.embedding_projection(tool_embedding).unsqueeze(1)
+        tool_embedding_proj = self.embedding_projection(tool_embedding)
 
         if self.use_cls:
             # Insert the cls token id at the beginning of the input_ids
@@ -214,12 +216,6 @@ def parse_args():
     )
     argparser.add_argument("--use_amp", action="store_true", help="use amp")
     argparser.add_argument(
-        "--iters_to_accumulate",
-        type=int,
-        default=1,
-        help="iters to accumulate gradients",
-    )
-    argparser.add_argument(
         "--num_tools_to_be_presented",
         type=int,
         default=64,
@@ -265,21 +261,32 @@ def train(args):
     use_amp = args.use_amp
     std = args.std
     num_layer_to_freeze = args.num_layer_to_freeze
-    iters_to_accumulate = args.iters_to_accumulate
+    num_tools_to_be_presented = args.num_tools_to_be_presented
 
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=False)
+    
+    # Detect tool embedding dimensions from the tool embeddings file
+    import pickle
+    with open(tool_embedding_dir, 'rb') as f:
+        tool_embeddings = pickle.load(f)
+    
+    # Get the dimension of the first embedding
+    first_embedding = next(iter(tool_embeddings.values()))
+    tool_embedding_dim = len(first_embedding) if hasattr(first_embedding, '__len__') else 768
+    print(f"Detected tool embedding dimension: {tool_embedding_dim}")
+    
     model = T2VPretrainedReranker(
         model_name=model_name,
         std=std,
         num_layer_to_freeze=num_layer_to_freeze,
         use_cls=True,
         use_sep=True,
+        tool_embedding_dim=tool_embedding_dim,
     ).to(device)
     print(f"Model: {model}")
 
     criterion = nn.BCEWithLogitsLoss()
 
-    num_tools_to_be_presented = args.num_tools_to_be_presented
     train_dataset = T2VDatasetQueryNT(
         data_dir=training_data_dir,
         tool_name_dir=tool_name_dir,
@@ -298,28 +305,32 @@ def train(args):
 
     print(f"Train dataset size: {len(train_dataset)}")
     print(f"Valid dataset size: {len(valid_dataset)}")
-    train_collate_fn = partial(collate_fn, tokenizer=tokenizer)
+
+    def collate_fn(x):
+        return t2v_collator_query_nt(x, tokenizer=tokenizer)
+    train_collate_fn = collate_fn
+    
     train_loader = DataLoader(
         train_dataset,
-        batch_size=args.batch_size // iters_to_accumulate,
+        batch_size=args.batch_size,
         shuffle=True,
-        collate_fn=train_collate_fn,
-        num_workers=4,
+        collate_fn=collate_fn,
+        num_workers=0,  # Disable multiprocessing to avoid lambda pickling issues
     )
     valid_loader = DataLoader(
         valid_dataset,
-        batch_size=args.batch_size // iters_to_accumulate,
+        batch_size=args.batch_size,
         shuffle=False,
-        collate_fn=train_collate_fn,
-        num_workers=4,
+        collate_fn=collate_fn,
+        num_workers=0,  # Disable multiprocessing to avoid lambda pickling issues
     )
 
     checkpoint_dir = args.checkpoint_dir or os.getcwd()
     os.makedirs(checkpoint_dir, exist_ok=True)
 
-    optimizer = torch.optim.AdamW(
-        filter(lambda p: p.requires_grad, model.parameters()), lr=lr, weight_decay=wd
-    )
+    # Filter parameters that require gradients
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    optimizer = torch.optim.AdamW(trainable_params, lr=lr, weight_decay=wd)
     scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
 
     # print model parameter count
@@ -395,14 +406,14 @@ def train(args):
                 # Compute loss
                 loss = criterion(output, label)
                 # Accumulate
-                loss = loss / iters_to_accumulate
+                loss = loss / 1 # No gradient accumulation
 
             # Take gradient step
             scaler.scale(loss).backward()
 
-            if ((i + 1) % iters_to_accumulate == 0) or (
+            if ((i + 1) % 1 == 0) or (
                 # Handle the last set of batches if they don't perfectly divide by the accumulation number
-                i == len(train_loader) - 1 and (i + 1) % iters_to_accumulate != 0
+                i == len(train_loader) - 1 and (i + 1) % 1 != 0
             ):
                 # Update learning rate
                 if current_step < num_linear_warmup_steps:
@@ -417,12 +428,16 @@ def train(args):
                 optimizer.zero_grad()
 
                 if args.wandb_name and (current_step % 10 == 0):
-                    wandb.log(
-                        {
-                            "train/loss": loss.item(),
-                            "train/lr": optimizer.param_groups[0]["lr"],
-                        }
-                    )
+                    try:
+                        wandb.log(
+                            {
+                                "train/loss": loss.item(),
+                                "train/lr": optimizer.param_groups[0]["lr"],
+                            }
+                        )
+                    except wandb.Error:
+                        # Skip logging if wandb is not initialized
+                        pass
                 current_step += 1
 
         with torch.no_grad():
@@ -472,21 +487,30 @@ def train(args):
                         )
                         total_recalls_at_k[k] += total_recall
 
-            wandb.log(
-                {
-                    "valid/loss": valid_loss / len(valid_loader),
-                    "valid/accuracy": valid_accuracy / len(valid_loader),
-                    "epoch": epoch,
-                }
-            )
-            for k in total_recalls_at_k.keys():
+            try:
                 wandb.log(
                     {
+                        "valid/loss": valid_loss / len(valid_loader),
+                        "valid/accuracy": valid_accuracy / len(valid_loader),
                         "epoch": epoch,
-                        f"valid/recall@{k}": total_recalls_at_k[k] / num_items,
                     }
                 )
-                print(f"Total recall at k@{k}: ", total_recalls_at_k[k] / num_items)
+                for k in total_recalls_at_k.keys():
+                    wandb.log(
+                        {
+                            "epoch": epoch,
+                            f"valid/recall@{k}": total_recalls_at_k[k] / num_items,
+                        }
+                    )
+            except wandb.Error:
+                # Skip logging if wandb is not initialized
+                pass
+            
+            # Print validation results
+            print(f"Validation Loss: {valid_loss / len(valid_loader):.4f}")
+            print(f"Validation Accuracy: {valid_accuracy / len(valid_loader):.4f}")
+            for k in total_recalls_at_k.keys():
+                print(f"Total recall at k@{k}: {total_recalls_at_k[k] / num_items:.4f}")
 
             checkpoint_path = os.path.join(checkpoint_dir, f"model_epoch_{epoch+1}.pt")
             torch.save(
@@ -509,11 +533,6 @@ def train(args):
 if __name__ == "__main__":
     args = parse_args()
     set_seed(args.seed)
-    if args.wandb_name:
-        wandb.init(project="t2v", config=args, name=args.wandb_name)
-    else:
-        print("No wandb_name provided. Initializing Weights & Biases in 'disabled' mode.")
-        wandb.init(project="t2v", config=args, mode="disabled")
     train(args)
 
     gc.collect()

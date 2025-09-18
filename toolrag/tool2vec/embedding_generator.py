@@ -32,6 +32,9 @@ import pickle
 from openai import AzureOpenAI
 from tqdm import tqdm
 
+import os
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from toolrag.models.e5 import E5Model
 from toolrag.models.mxbai import MxbaiModel
 
@@ -95,7 +98,7 @@ def retry_with_exponential_backoff(
 @retry_with_exponential_backoff(
     max_retries=20,
 )
-def generate_embeddings(text, model="azure"):
+def generate_embeddings(text, model="e5-small"):
     if model == "openai":
         raise NotImplementedError("OpenAI model not supported for embedding generation")
     elif model == "azure":
@@ -115,30 +118,49 @@ def generate_embeddings(text, model="azure"):
 def process_item(
     args, data_dict: dict[str, str], debug: bool = False
 ) -> dict[str, Any]:
-    functions = data_dict["functions"]
-    refined_instruction = data_dict.get("refined_instruction", None)
-    unrefined_instruction = data_dict.get("instruction", None)
-
-    if refined_instruction is None:
-        instruction = unrefined_instruction
-
-        if unrefined_instruction is None:
-            raise ValueError(
-                "Either refined_instruction or instruction must be provided"
-            )
+    # Handle both old format (functions, instruction) and new format (query, tool_name)
+    if "query" in data_dict and "tool_name" in data_dict:
+        # New format from query_tools.json
+        query = data_dict["query"]
+        tool_name = data_dict["tool_name"]
+        
+        # Generate embedding for the query
+        query_embedding = generate_embeddings(query, model=args.model)
+        
+        if debug:
+            print(f"Tool: {tool_name}, Query: {query[:80]}..., Embedding length: {len(query_embedding)}")
+        
+        return {
+            "tool_name": tool_name,
+            "query": query,
+            "query_embedding": query_embedding,
+        }
     else:
-        instruction = refined_instruction
+        # Old format (backward compatibility)
+        functions = data_dict["functions"]
+        refined_instruction = data_dict.get("refined_instruction", None)
+        unrefined_instruction = data_dict.get("instruction", None)
 
-    function_embedding = generate_embeddings(instruction, model=args.model)
+        if refined_instruction is None:
+            instruction = unrefined_instruction
 
-    if debug:
-        print(functions, instruction, len(function_embedding))
+            if unrefined_instruction is None:
+                raise ValueError(
+                    "Either refined_instruction or instruction must be provided"
+                )
+        else:
+            instruction = refined_instruction
 
-    return {
-        "functions": functions,
-        "instruction": instruction,
-        "function_embedding": function_embedding,
-    }
+        function_embedding = generate_embeddings(instruction, model=args.model)
+
+        if debug:
+            print(functions, instruction, len(function_embedding))
+
+        return {
+            "functions": functions,
+            "instruction": instruction,
+            "function_embedding": function_embedding,
+        }
 
 
 def parse_args():
@@ -146,7 +168,7 @@ def parse_args():
     argparser.add_argument(
         "--data_path",
         type=str,
-        help="Json file of examples to generate embeddings for",
+        help="Json file of examples to generate embeddings for. Supports both old format (functions/instruction) and new format (query/tool_name from query_tools.json)",
         required=True,
     )
     argparser.add_argument(
@@ -176,7 +198,7 @@ def parse_args():
     argparser.add_argument(
         "--model",
         type=str,
-        default="azure",
+        default="e5-base",
         help="Model to use for embedding generation",
         choices=["azure", "openai", "e5-small", "e5-base", "e5-large", "mxbai-large"],
     )
@@ -282,12 +304,24 @@ if __name__ == "__main__":
     # Generate fixed embeddings
     fixed_embeddings = {}
     for entry in example_base_embedding_list:
-        functions = entry.get("functions", [])
-        embedding = entry.get("function_embedding")
-        if not functions:
-            print("Warning: No functions found for instruction:", entry.get("instruction", "")[:80])
-        for fn in functions:
-            fixed_embeddings[fn] = embedding
+        # Handle new format (query_tools.json)
+        if "tool_name" in entry and "query_embedding" in entry:
+            tool_name = entry["tool_name"]
+            embedding = entry["query_embedding"]
+            if not tool_name:
+                print("Warning: No tool_name found for query:", entry.get("query", "")[:80])
+            else:
+                fixed_embeddings[tool_name] = embedding
+        # Handle old format (backward compatibility)
+        elif "functions" in entry and "function_embedding" in entry:
+            functions = entry.get("functions", [])
+            embedding = entry.get("function_embedding")
+            if not functions:
+                print("Warning: No functions found for instruction:", entry.get("instruction", "")[:80])
+            for fn in functions:
+                fixed_embeddings[fn] = embedding
+        else:
+            print("Warning: Entry format not recognized:", list(entry.keys()))
 
     print(f"Converted {len(fixed_embeddings)} unique tools to embeddings.")
 

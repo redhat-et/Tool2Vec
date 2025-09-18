@@ -12,55 +12,66 @@
 Efficient and scalable tool retrieval is critical for modern function calling applications. We propose novel approaches to the tool retrieval problem: (1) Tool2Vec: usage-driven tool embedding generation for tool retrieval, (2) ToolRefiner: a staged retrieval method that iteratively improves the quality of retrieved tools, and (3) MLC: framing tool retrieval as a multi-label classification problem. With these new methods, we achieve improvements of up to 27.28 in Recall@K on the ToolBench dataset. Furthermore, we introduce ToolBank, a set of domain-specific tool retrieval datasets to encourage further research. For more details, please check out our paper [here](https://arxiv.org/abs/2409.02141).
 
 ---
-## Installation
+## Quickstart
 
-1. Create a conda environment and install the dependencies
-```
-conda create --name ToolRAG python=3.10 -y
-conda activate ToolRAG
-```
-
-2. Clone and install the dependencies
-```
-git clone https://github.com/SuhongMoon/ToolRAG.git
-cd ToolRAG
-pip install -e .
+### 1. Create a Python 3.10 environment and install dependencies
+```sh
+python3.10 -m venv .venv310
+source .venv310/bin/activate
+pip install --upgrade pip
 pip install -r requirements.txt
 ```
----
 
+### 2. Prepare your data
+- You need three files: `train.json`, `val.json`, and `test.json` (see below for format).
+- You can generate these using the provided scripts or your own data.
+
+### 3. Run the full pipeline
+From the project root:
+```sh
+PYTHONPATH=. python toolrag/run_full_pipeline.py \
+  --train-file toolrag/train.json \
+  --val-file toolrag/val.json \
+  --test-file toolrag/test.json
+```
+
+This will:
+- Generate embeddings
+- Train the reranker model
+- Evaluate tool selection on the test set
+
+---
+## Data Format
+Each file should be a JSON list of objects with at least:
+```json
+{
+  "tool_name": "...",
+  "query": "..."
+}
+```
+
+---
 ## Download ToolBank Dataset
 1. Install HuggingFace `datasets` package
-```
+```sh
 pip install datasets
 ```
-
 2. Load the dataset from HuggingFace
 ```python
 from datasets import load_dataset
 
 tool_bank = load_dataset("squeeze-ai-lab/ToolBank")
 ```
-The link to the dataset: [here](https://huggingface.co/datasets/squeeze-ai-lab/ToolBank)
+[Dataset link](https://huggingface.co/datasets/squeeze-ai-lab/ToolBank)
 
 ---
-## Basic Runs
+## More
+- For generating synthetic data, see `toolrag/data_generation/README.md`.
+- For embedding generation, see `toolrag/tool2vec/README.md`.
+- For MLC model, see `toolrag/mlc/README.md`.
+- For ToolRefiner, see `toolrag/toolrefiner/README.md`.
 
-### Generate Synthetic Data
-Refer to `toolrag/data_generation/README.md` for more details [here](toolrag/data_generation/README.md).
-
-### Fine Tuning Embedding Models
-Refer to `toolrag/query2query/README.md` for more details [here](toolrag/query2query/README.md).
-
-### Generate Tool2Vec Embeddings
-Refer to `toolrag/tool2vec/README.md` for more details [here](toolrag/tool2vec/README.md).
-
-### Train MLC Model
-Refer to `toolrag/mlc/README.md` for more details [here](toolrag/mlc/README.md).
-
-### Train ToolRefiner Model
-Refer to `toolrag/toolrefiner/README.md` for more details [here](toolrag/toolrefiner/README.md).
-
+---
 ## Citation
 ```
 @misc{moon2024efficient,
